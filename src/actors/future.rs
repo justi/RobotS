@@ -13,9 +13,15 @@ pub struct Future {
 
 #[derive(PartialEq)]
 enum FutureState {
+    /// Future is created, but the value is not yet filled.
     New,
+    /// The value has been completed, but computation have not been started yet.
     Completed,
+    /// Computations have been run.
+    /// NOTE: this does not mean that a computation is running right now, thus that is not super
+    /// Sync.
     Computing,
+    /// The value from the Future has been extracted, nothing can be done with it now.
     Taken,
 }
 
@@ -39,13 +45,16 @@ impl Future {
     }
 
     pub fn handle(&self) {
-        // FIXME(gamazeps): check that the state is clean.
-        let func = self.closures.lock().unwrap().pop_front();
-        if let Some(func) = func {
-            let mut value = self.value.lock().unwrap();
-            *value = Some(func(value.take().unwrap()));
-        }
-
+        // FIXME(gamazeps): check that the state is clean in a better way.
+        if *self.state.lock().unwrap() == FutureState::Completed ||
+            *self.state.lock().unwrap() == FutureState::Computing {
+                let func = self.closures.lock().unwrap().pop_front();
+                if let Some(func) = func {
+                    let mut value = self.value.lock().unwrap();
+                    *value = Some(func(value.take().unwrap()));
+                }
+                *self.state.lock().unwrap() = FutureState::Computing;
+            }
     }
 
     pub fn extract(&self) -> Option<Box<Any>> {
