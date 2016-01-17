@@ -2,7 +2,7 @@ use std::any::Any;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-struct Future {
+pub struct Future {
     /// Value contained inside the future.
     value: Mutex<Option<Box<Any>>>,
     /// Closures to cal on the value.
@@ -15,11 +15,12 @@ struct Future {
 enum FutureState {
     New,
     Completed,
+    Computing,
     Taken,
 }
 
 impl Future {
-    fn new() -> Future {
+    pub fn new() -> Future {
         Future {
             value: Mutex::new(None),
             closures: Mutex::new(VecDeque::new()),
@@ -27,7 +28,7 @@ impl Future {
         }
     }
 
-    fn complete(&self, value: Box<Any>) {
+    pub fn complete(&self, value: Box<Any>) {
         let mut state = self.state.lock().unwrap();
         if *state == FutureState::New {
             *self.value.lock().unwrap() = Some(value);
@@ -37,7 +38,7 @@ impl Future {
         }
     }
 
-    fn handle(&self) {
+    pub fn handle(&self) {
         // FIXME(gamazeps): check that the state is clean.
         let func = self.closures.lock().unwrap().pop_front();
         if let Some(func) = func {
@@ -47,11 +48,17 @@ impl Future {
 
     }
 
-    fn extract(&self) -> Option<Box<Any>> {
+    pub fn extract(&self) -> Option<Box<Any>> {
         let mut value = self.value.lock().unwrap();
         let v = value.take();
         *value = None;
         *self.state.lock().unwrap() = FutureState::Taken;
         v
+    }
+
+    // NOTE: I'm super no sure about the 'static lifetime.
+    pub fn then_do<F: Fn(Box<Any>) -> Box<Any> + 'static>(&self, closure: F) {
+        self.closures.lock().unwrap().push_back(Box::new(closure));
+        // FIXME(gamazeps): schedule the actor.
     }
 }
