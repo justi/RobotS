@@ -178,8 +178,8 @@ struct DoubleAnswer {
 
 impl Actor for DoubleAnswer {
     fn post_restart(&self, _context: ActorCell) {
-        let mut sender = self.sender.lock().unwrap();
-        sender.send(());
+        let sender = self.sender.lock().unwrap();
+        let _res = sender.send(());
     }
 
     fn receive(&self, _message: Box<Any>, context: ActorCell) {
