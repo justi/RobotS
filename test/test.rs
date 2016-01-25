@@ -1,7 +1,4 @@
-extern crate eventual;
 extern crate robots;
-
-use eventual::Async;
 
 use std::any::Any;
 use std::sync::{Arc, Mutex};

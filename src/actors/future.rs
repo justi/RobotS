@@ -1,12 +1,26 @@
 use std::any::Any;
 use std::mem;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use actors::{Actor, ActorCell, ActorContext, ActorPath, ActorRef};
+use actors::{Actor, ActorCell, ActorContext, ActorPath, ActorRef, Message};
 
-enum FutureMessages {
+macro_rules! complete {
+    ($future:expr, $complete:expr, $context:expr) => {
+        $context.tell($future, FutureMessages::Complete(Box::new($complete) as Box::<Any + Send>));
+    }
+}
+
+macro_rules! do_calculation {
+    ($future:expr, $calculation:expr, $context:expr) => {
+        $context.tell($future, FutureMessages::Complete(Box::new($complete) as Box::<Any + Send>));
+    }
+}
+
+
+#[derive(Clone)]
+pub enum FutureMessages {
     /// We complete the future with the value inside the enum.
-    Complete(Box<Any>),
+    Complete(Arc<Any + Send + Sync>),
     /// We apply the following closure to the value inside the Future and update it with the
     /// result.
     ///
@@ -16,40 +30,44 @@ enum FutureMessages {
     ///
     /// Note that Done and Extracted might be a double of each other, I'll try to remove it
     /// afterwards.
-    Calculation(Box<Fn(Box<Any>, ActorCell) -> FutureState>),
+    Calculation(Arc<Fn(Box<Any>, ActorCell) -> FutureState + Send + Sync>),
 }
 
-enum FutureState {
+pub enum FutureState {
     Uncompleted,
     Computing(Box<Any + Send>),
     Terminated,
     Extracted,
 }
 
-struct Future {
+pub struct Future {
     state: Mutex<Option<FutureState>>,
 }
 
 impl Future {
-    fn new() -> Future {
+    pub fn new(_dummy: ()) -> Future {
         Future {
             state: Mutex::new(Some(FutureState::Uncompleted)),
         }
     }
 }
 
+trait LocalShit: Any + Send {}
+impl<T> LocalShit for T where T: Any + Send {}
+
 impl Actor for Future {
     fn receive(&self, message: Box<Any>, context: ActorCell) {
         // NOTE: We may want to fail if the message is not correct.
         if let Ok(message) = Box::<Any>::downcast::<FutureMessages>(message) {
             match *message {
-                FutureMessages::Complete(msg) => {
+                FutureMessages::Complete(mut msg) => {
                     let mut state = self.state.lock().unwrap();
                     let s = state.take().unwrap();
                     match s {
                         FutureState::Uncompleted => {
                             *state = Some(FutureState::Computing(unsafe {
-                                mem::transmute::<Box<Any>, Box<Any + Send>>(msg)
+                                let msg = Arc::get_mut(&mut msg).unwrap();
+                                Box::<Any + Send>::from_raw(msg)
                             }));
                         },
                         _ => {
