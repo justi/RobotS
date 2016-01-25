@@ -27,13 +27,13 @@ enum FutureState {
 }
 
 struct Future {
-    state: Mutex<FutureState>,
+    state: Mutex<Option<FutureState>>,
 }
 
 impl Future {
     fn new() -> Future {
         Future {
-            state: Mutex::new(FutureState::Uncompleted),
+            state: Mutex::new(Some(FutureState::Uncompleted)),
         }
     }
 }
@@ -45,11 +45,12 @@ impl Actor for Future {
             match *message {
                 FutureMessages::Complete(msg) => {
                     let mut state = self.state.lock().unwrap();
-                    match *state {
+                    let s = state.take().unwrap();
+                    match s {
                         FutureState::Uncompleted => {
-                            *state = FutureState::Computing(unsafe {
+                            *state = Some(FutureState::Computing(unsafe {
                                 mem::transmute::<Box<Any>, Box<Any + Send>>(msg)
-                            });
+                            }));
                         },
                         _ => {
                             // NOTE: Send a failure to the sender instead.
@@ -60,20 +61,24 @@ impl Actor for Future {
                 FutureMessages::Calculation(func) => {
                     // FIXME(gamazeps): check the state.
                     let mut state = self.state.lock().unwrap();
-                    match *state {
+                    let s = state.take().unwrap();
+                    match s {
                         FutureState::Computing(value) => {
                             let res = (*func)(value, context.clone());
                             match res {
-                                FutureState::Computing(v) => *state = FutureState::Computing(v),
+                                FutureState::Computing(v) => *state = Some(FutureState::Computing(v)),
                                 FutureState::Terminated => {
-                                    *state = FutureState::Terminated;
+                                    *state = Some(FutureState::Terminated);
                                     context.kill_me();
                                 }
                                 FutureState::Extracted => {
-                                    *state = FutureState::Extracted;
+                                    *state = Some(FutureState::Extracted);
                                     context.kill_me();}
                                 ,
-                                FutureState::Uncompleted => panic!("A future closure returned Uncompleted, this should not happen"),
+                                FutureState::Uncompleted => {
+                                    *state = Some(FutureState::Uncompleted);
+                                    panic!("A future closure returned Uncompleted, this should not happen");
+                                },
                             }
                         },
                         FutureState::Uncompleted => panic!("A closure was called on an uncompleted Future."),
