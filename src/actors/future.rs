@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::collections::VecDeque;
 use std::mem;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Sender;
@@ -31,18 +32,28 @@ pub enum FutureState {
 
 pub struct Future {
     state: Mutex<Option<FutureState>>,
+    scheduled_calculations: Mutex<VecDeque<Arc<Fn(Box<Any + Send>, ActorCell) -> FutureState + Send + Sync>>>,
 }
 
 impl Future {
     pub fn new(_dummy: ()) -> Future {
         Future {
             state: Mutex::new(Some(FutureState::Uncompleted)),
+            scheduled_calculations: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    fn do_computation(&self, value: Box<Any + Send>, func: Arc<Fn(Box<Any + Send>, ActorCell) -> FutureState + Send + Sync>, context: ActorCell) {
+        let mut state = self.state.lock().unwrap();
+        *state = Some((*func)(value, context.clone()));
+        match *state {
+            Some(FutureState::Terminated) => context.kill_me(),
+            Some(FutureState::Extracted) => context.kill_me(),
+            Some(FutureState::Uncompleted) => panic!("A future closure returned Uncompleted, this should not happen"),
+            _ => {},
         }
     }
 }
-
-trait LocalShit: Any + Send {}
-impl<T> LocalShit for T where T: Any + Send {}
 
 impl Actor for Future {
     fn receive(&self, message: Box<Any>, context: ActorCell) {
@@ -51,48 +62,46 @@ impl Actor for Future {
             match *message {
                 FutureMessages::Complete(mut msg) => {
                     let mut state = self.state.lock().unwrap();
-                    let s = state.take().unwrap();
-                    match s {
-                        FutureState::Uncompleted => {
+                    match *state {
+                        Some(FutureState::Uncompleted) => {
                             *state = Some(FutureState::Computing(unsafe {
                                 let msg = Arc::get_mut(&mut msg).unwrap();
                                 Box::<Any + Send>::from_raw(msg)
                             }));
+                            println!("I have been completed");
+                            let mut scheduled_calculations = self.scheduled_calculations.lock().unwrap();
+                            while let Some(func) = scheduled_calculations.pop_front() {
+                                // FIXME(gamazeps) compute for real..
+                                panic!("I should be computing");
+                            }
                         },
-                        _ => {
+                        Some(_) => {
                             // NOTE: Send a failure to the sender instead.
                             panic!("Tried to complete a Future twice");
-                        }
+                        },
+                        None => unreachable!(),
                     }
                 },
                 FutureMessages::Calculation(func) => {
                     let mut state = self.state.lock().unwrap();
-                    let s = state.take().unwrap();
+                    let s = state.take().expect("lol");
                     match s {
-                        FutureState::Computing(value) => {
-                            let res = (*func)(value, context.clone());
-                            match res {
-                                FutureState::Computing(v) => *state = Some(FutureState::Computing(v)),
-                                FutureState::Terminated => {
-                                    *state = Some(FutureState::Terminated);
-                                    context.kill_me();
-                                }
-                                FutureState::Extracted => {
-                                    *state = Some(FutureState::Extracted);
-                                    context.kill_me();}
-                                ,
-                                FutureState::Uncompleted => {
-                                    *state = Some(FutureState::Uncompleted);
-                                    panic!("A future closure returned Uncompleted, this should not happen");
-                                },
-                            }
+                        FutureState::Computing(value) => self.do_computation(value, func, context),
+                        FutureState::Uncompleted => {
+                            *state = Some(s);
+                            println!("keeping the calculation for later");
+                            self.scheduled_calculations.lock().unwrap().push_back(func);
                         },
-                        FutureState::Uncompleted => panic!("A closure was called on an uncompleted Future {}.",
-                                                           *context.actor_ref().path().logical_path()),
-                        FutureState::Terminated => panic!("A closure was called on a Terminated Future."),
-                        FutureState::Extracted => panic!("A closure was called on an extracted Future."),
+                        FutureState::Terminated => {
+                            *state = Some(s);
+                            panic!("A closure was called on a Terminated Future.");
+                        },
+                        FutureState::Extracted => {
+                            *state = Some(s);
+                            panic!("A closure was called on an extracted Future.");
+                        },
                     }
-                },
+                }
             }
         }
     }
